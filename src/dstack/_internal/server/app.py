@@ -2,6 +2,7 @@ import asyncio
 import importlib.resources
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Awaitable, Callable, List
@@ -97,6 +98,8 @@ def create_app() -> FastAPI:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
+    server_executor = ThreadPoolExecutor(max_workers=settings.SERVER_EXECUTOR_MAX_WORKERS)
+    asyncio.get_running_loop().set_default_executor(server_executor)
     await migrate()
     _print_dstack_logo()
     if not check_required_ssh_version():
@@ -241,6 +244,23 @@ def register_routes(app: FastAPI, ui: bool = True):
             response.status_code,
         )
         return response
+
+    if settings.SERVER_PROFILING_ENABLED:
+        from pyinstrument import Profiler
+
+        @app.middleware("http")
+        async def profile_request(request: Request, call_next):
+            profiling = request.query_params.get("profile", False)
+            if profiling:
+                profiler = Profiler()
+                profiler.start()
+                respone = await call_next(request)
+                profiler.stop()
+                with open("profiling_results.html", "w+") as f:
+                    f.write(profiler.output_html())
+                return respone
+            else:
+                return await call_next(request)
 
     # this middleware must be defined after the log_request middleware
     @app.middleware("http")
